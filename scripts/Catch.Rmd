@@ -1,0 +1,240 @@
+---
+title: "Linking DT with CTD"
+author: "Camilla Novaglio & Sven"
+date: "14/09/2017"
+output: 
+  html_document:
+    toc: yes  
+    toc_float: yes 
+---
+
+get the closest CTD for each DT tow
+
+```{r setup, include=FALSE}
+
+rm(list=ls())
+
+#trail #
+
+
+## upload CTD data 
+library("ncdf4")
+library("stringr")
+source("/Volumes/public/sven/R/scripts/CTD_helper.R")
+setwd("/Volumes/current/science/CTD_AvgFiles/CapPro") 
+
+ncfile <- list.files(pattern=".nc")
+allCTD<-list()
+allCTD[[1]]
+coordCTD<-data.frame()
+
+for (i in 1:length(ncfile)){
+
+  allCTD[[i]] <- CSIROctd(ncfile[[i]])  
+  names(allCTD)[i]<-ncfile[i]
+  temp<-allCTD[[i]][1,which(colnames(allCTD[[i]]) %in% c("Longitude","Latitude"))]
+  temp$ctd<-ncfile[i]
+  coordCTD<-rbind(coordCTD, temp)
+}
+
+## link CTD to sunset - use time field in posix (tz="UTC", "Brisbane/Australia", "AEST")
+
+## upload and clean catch and operations data 
+# catch<-read.csv("/Volumes/current/science/Red_Team/in2007_v04_DTcatchR.csv")
+catch<-read.csv("/Users/nov017/Dropbox/IN2017_V04/Data/in2007_v04_DTcatchR.csv")
+catch<-catch[,-which(colnames(catch) %in% c("original_name","weight_g","Subsample_correction_factor","species","photo","comments","removed", "to_check" ))]
+tows<-read.csv("/Users/nov017/Dropbox/IN2017_V04/Data/in2007_v04_DToperationR.csv")
+tows<-tows[,-which(colnames(tows) %in% c("X","voyage","equipment","mesh_size_codend_","vessel_speed","subsampled","observer","modify","comments","time_out","lat_fin","long_fin","temp_net_in","net_opening_vert_m","net_opening_oriz_m","metal_cage_opening_vert_oriz_m", "mesh_size_net1_mm", "mesh_size_net2_mm"))]
+tows$lat_in<- - tows$lat_in
+
+# NOTE transform some coordinates in dec degrees 
+# NOTE underestimating total codend weights, as some morphospecies for which there was only one individual have a seq_no == 1 instead of A. to fix: 
+# NOTE delete Andrew Jeffs trawls 
+
+# index those records and substitute 1 with A. 
+
+## get the closest CTD for each DT tow
+library("geosphere")
+library("sp")
+
+tows<-tows[-which(tows$codend==1 | is.na(tows$total_weight_g)),] # delete codend 1 as we are not considering the catch from this net which is open at all depths, and delete all codends for whcih catch was null. 
+
+meanLat<-aggregate(tows$lat_in, by=list(tows$operation), mean)
+colnames(meanLat)<-c("operation","meanLatOperation")
+meanLong<-aggregate(tows$long_in, by=list(tows$operation), mean)
+colnames(meanLong)<-c("operation","meanLongOperation")
+
+tows<-merge(tows, meanLat, all=TRUE)
+tows<-merge(tows, meanLong, all=TRUE) # link CTD with mean lat and mean long by operation.  
+
+tows[which(is.na(tows$meanLatOperation)),"meanLatOperation"]<--33.11002 # this has to be fixed once we insert the missing lat in the operation dataset
+
+closestCTD<-function(tows, coordCTD){
+  tows["meanLongOperation"]<-as.numeric(as.character(tows["meanLongOperation"]))
+  tows["meanLatOperation"]<-as.numeric(as.character(tows["meanLatOperation"]))
+  mat<-distm(as.numeric(tows[c('meanLongOperation', 'meanLatOperation')]), coordCTD[,c('Longitude','Latitude')], fun=distVincentyEllipsoid)
+  index<-coordCTD[which.min(mat),"ctd"]
+  return(index)
+}
+
+ctd<-apply(tows, 1, function(x) closestCTD(x, coordCTD))
+tows<-cbind(tows, ctd)
+
+## create a unique df including tows with all codend and CTD data, to be used in ggplot  
+allCTDdf<-do.call("rbind", allCTD)
+allCTDdf$ctd<-as.factor(gsub("\\..[0-9]*$","",rownames(allCTDdf)))
+rownames(allCTDdf)<-NULL
+
+head(df1)
+
+df1<-merge(tows, allCTDdf, all=TRUE) # tows with CTD info
+df1<-df1[-which(is.na(df1$operation)),]
+
+##### adding 
+# get ctd variables at codend depth: - no depth in ctd data is by 1 m - Sven has already done it - do it here as well. you need it for the plot 
+# first, figure our the codend depth range 
+# second, figure our the ctd values (e.g of temperature) withing that range
+# third do the mean of these values for each range 
+#### end adding 
+
+# rm(list = setdiff(ls(), c('allCTD','catch', 'tows', 'df1')))
+# save.image("/Volumes/public/sven/dt&ctdData.RData")
+```
+
+link the ctd/tow data to the catch data expressed as total weight for each codend, and total weight for each codend/morphospecies combination.
+
+```{r }
+# catch dataset: 
+# first - consider only seq_no A and B and merge the weight, so that you have a catch per each codend/morphospecies combination 
+# second - aggregate the catch by codend and substitute this value to the one reported in the tows dataset (incorrect).
+# third - merge df1 (operation + ctd) with the catch. remember to delete weight_g_corrected from the catch and  total_weight_g from df1 before merging 
+
+temp<-merge(catch, tows, all=TRUE)
+temp<-temp[which(temp$seq_no %in% c("A","B")),]
+temp$weight_g_corrected<-as.numeric(as.character(temp$weight_g_corrected))
+temp1<-aggregate(temp$weight_g_corrected, by=list(temp$operation, temp$codend, temp$morphospecies), sum, na.rm=TRUE)
+colnames(temp1)<-c("operation","codend","morphospecies","morphosp_weight_g_corrected") # this si the total weight of each morphospecies in each operation/codend combination 
+
+temp2<-aggregate(temp$weight_g_corrected, by=list(temp$operation, temp$codend), sum, na.rm=TRUE)
+colnames(temp2)<-c("operation","codend","tot_codend_weight")
+# temp2$morphospecies<-"tot_codend"
+
+temp0<-merge(temp1, temp2, all=TRUE)
+temp0$samplingID<-paste("OP", temp0$operation, "CE", temp0$codend, sep="") # recreate samplingID
+temp0<-temp0[,-which(colnames(temp0) %in% c("operation","codend"))] # this is the new catch dataset 
+
+df1<-df1[,-which(colnames(df1) %in% c("total_weight_g"))]
+temp3<-merge(df1, temp0, all=FALSE)
+
+# NOTE - this dataset (temp3) has lots of repetitions as it's built on 3 levels: tows, (which expands into) ctd and catch.
+
+# rename
+TowCtd<-df1
+TowCtdCatch<-temp3
+catchCorrected<-temp0 # this is the new catch dataset
+
+rm(list = setdiff(ls(), c('allCTD','catchCorrected', 'tows', 'TowCtd', 'TowCtdCatch')))
+save.image("/Volumes/public/sven/community/data/dt&ctdData.RData")
+```
+
+plots
+
+```{r }
+
+# get ctd variables at codend depths - see above
+
+
+# plot only infor related to 1 DT to start with: 
+df<-TowCtdCatch
+
+# from wide to long, create a group column based on the CTD and cacth values you want to plot. I would exclude the morphospecies weight for now.  
+library(reshape2)
+
+# clean the dataset
+df<-df[,-which(colnames(df) %in% c("codend","date", "time_in", "dn", "lat_in", "long_in","in_dept_m", "meanLatOperation","meanLongOperation", "morphospecies", "morphosp_weight_g_corrected", "Time","pressureTemperature", "Longitude", "Latitude","altimeter"))]
+dfLong<-melt(df, id.vars=c("operation","samplingID","water_mass","ctd","Pressure"))
+dfLong<-unique(dfLong)
+
+# codend weight not working - check 
+dfLong<-dfLong[which(dfLong$variable =="tot_codend_weight"),]
+head(pr) 
+
+library(ggplot2)
+pl<-ggplot(data =dfLong, aes(x =  -Pressure, y = value, color=water_mass))+ # group =variable,
+   geom_point()+ 
+   coord_flip()+
+
+   # adjust plot
+   xlab("Depth")+
+   ylab("Catch g")+
+   theme_bw() +
+   theme(text = element_text(size=16),
+         axis.title.y = element_text(vjust=0.4),
+         axis.title.x = element_text(vjust=0.3),
+         panel.border = element_rect(color="black", size=1.5, linetype="solid"),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank())+
+
+   facet_wrap(~ variable, ncol=2, scales="free")
+ print(pl)  
+
+```
+
+adding most abundant species to morphospecies 
+
+```{r}
+load("/Volumes/public/sven/community/data/dt&ctdData.RData")
+as.data.frame(unique(catchCorrected$morphospecies))
+
+catchCorrected[whcih(catchCorrected$morphospecies=="amphi"), "mainSp"]<-"phronima"
+catchCorrected[whcih(catchCorrected$morphospecies=="crust"), "mainSp"]<-"euphausiids"
+catchCorrected[whcih(catchCorrected$morphospecies=="crust"), "mainSp"]<-"euphausiids"
+
+
+
+```
+
+polygon for krig_CTD.r
+
+```{r}
+
+# new poly
+allCTDdf<-do.call("rbind", allCTD)
+coord<-unique(allCTDdf[,which(colnames(allCTDdf) %in% c("Longitude","Latitude"))])
+
+# chull for all the points
+poly1 <-  coord[chull(coord),]
+
+savePoly<- poly1
+
+# trial plot
+# library(ggplot2)
+# ggplot(coord, aes(Longitude, Latitude)) +
+#   geom_point() + 
+#   geom_polygon(data = poly1, alpha = 0.1)
+
+###### adding - enalrge polygons
+# convert in UTMand # use gBuffer from rgeos
+install.packages("rgeos") # does not install!!!! 
+library(rgeos)
+library(sp)
+
+pts <- SpatialPoints(poly1) # maybe better spatialpolydf
+plot(gBuffer(pts, width=0.6), lwd=2)
+
+```
+
+models 
+
+```{r}
+# install.packages("RCPmod")
+library("RCPmod")
+# install.packages("nvabund")
+library("nvabund")
+
+# using the nvabund package to define the main explanatory variables
+
+
+
+
+````
