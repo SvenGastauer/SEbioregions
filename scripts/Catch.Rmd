@@ -14,9 +14,6 @@ get the closest CTD for each DT tow
 
 rm(list=ls())
 
-#trail #
-
-
 ## upload CTD data 
 library("ncdf4")
 library("stringr")
